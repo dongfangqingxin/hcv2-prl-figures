@@ -1,0 +1,24 @@
+#: table_doi: 10.17182/hepdata.99234.v1/t3
+#: name: dataFig2C
+#: description: Inclusive J/$\psi$ $v_2$ as a function of $p_{T}$ in the centrality interval 30$-$50 %
+#: data_file: datafig2c.yaml
+#: keyword reactions: PB PB --> J/PSI < MU+ MU- > X
+#: keyword phrases: Inclusive J/PSI | V2 Azimuthal Asymmetries | Transverse Momentum Dependence
+#: keyword cmenergies: 5020.0
+#: keyword observables: V2
+#: CENTRALITY [PCT],30 TO 50
+#: SQRT(S) [GEV],5020.0
+#: RE,PB PB --> JPSI < MU+ MU- > X
+#: YRAP,2.5 TO 4.0 [0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 24]
+PT [GEV/C],V2,stat +,stat -,syst +,syst -
+0.64,0.0008,0.011,-0.011,0.0032389,-0.0032389
+1.49,0.029,0.0091,-0.0091,0.0032904,-0.0032904
+2.47,0.067,0.0089,-0.0089,0.0033594,-0.0033594
+3.46,0.099,0.0095,-0.0095,0.0043267,-0.0043267
+4.45,0.098,0.011,-0.011,0.0065719,-0.0065719
+5.45,0.101,0.013,-0.013,0.0066256,-0.0066256
+6.819,0.098,0.023,-0.023,0.0065651,-0.0065651
+8.835,0.092,0.022,-0.022,0.0067724,-0.0067724
+10.84,0.055,0.037,-0.037,0.0075293,-0.0075293
+14.25,0.026,0.039,-0.039,0.0093145,-0.0093145
+
