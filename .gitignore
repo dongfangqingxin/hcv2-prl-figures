@@ -1,6 +1,5 @@
 code/run.ipynb
-input-data
-input-models
-output
-Nsigma
-help-code
+input-data/
+input-models/
+output/
+help-code/
