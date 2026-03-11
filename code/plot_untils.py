@@ -342,50 +342,6 @@ def GetV2HistAndFit(infile, dir, ptmin, ptmax, nbin, hasfeflections=False):
     return gv2, hV2VsFrac, tf1
 
 
-def GetCanvas4sub(name, xmins, xmaxs, ymins_mass, ymaxs_mass, ymins_v2, ymaxs_v2, axisnametop, axisnamebottom):
-    """
-    Creates a canvas with 4 adjacent subpads (one for mass on left top, one for v2 on left bottom
-    one for cut_variation on right top, one for v2 vs FD fraction on right bottom),
-    sharing the x-axis while maintaining different y-axis ranges.
-
-    Args:
-        name (str): Name of the canvas.
-        xmins (float): Minimum x-axis value (common for both pads).
-        xmaxs (float): Maximum x-axis value (common for both pads).
-        ymins_mass (float): Minimum y-axis value for the mass panel.
-        ymaxs_mass (float): Maximum y-axis value for the mass panel.
-        ymins_v2 (float): Minimum y-axis value for the v2 panel.
-        ymaxs_v2 (float): Maximum y-axis value for the v2 panel.
-        axisnametop (str): Y-axis title for the mass plot.
-        axisnamebottom (str): Y-axis title for the v2 plot.
-
-    Returns:
-        tuple: (canvas, frames)
-    """
-    # Create canvas with 2 rows (top = mass, bottom = v2)
-    canvas = ROOT.TCanvas(name, name, 1200, 1100)  
-    canvas.Divide(2, 2)  # Small spacing between top and bottom
-
-    frames = []
-    for i in range(4):
-        canvas.cd(i + 1)
-        pad = ROOT.gPad
-        # Set the correct y-axis range for each pad
-        if i == 0:  # Mass plot (top)
-            frame = pad.DrawFrame(xmins, ymins_mass, xmaxs, ymaxs_mass, axisnametop)
-        elif i == 1:  
-            frame = pad.DrawFrame(0.5, 0, 20.5, 20000, ';Minimum BDT score for prompt #Lambda_{c}^{+}; raw yield')
-            frame = pad.DrawFrame(0.5, 0, 20.5, 20000, ';BDT-based selection; raw yield')
-        elif i == 2:  # v2 plot (bottom)
-            frame = pad.DrawFrame(xmins, ymins_v2, xmaxs, ymaxs_v2, axisnamebottom)
-        elif i == 3:  # v2 vs Fraction (bottom)
-            frame = pad.DrawFrame(0, 0, 1.05, 0.3, ';Non-prompt fraction; #it{v}_{2}^{sig.}{SP, |#Delta#it{#eta}| > 1.3}')
-        frame.SetTitle("")
-
-        frames.append(frame)
-
-    return canvas, frames
-
 
 def GetLegend(xmin=0.19, ymin=0.62, xmax=0.75, ymax=0.77, textsize=0.04, ncolumns=2, header=' ', fillstyle=0):
     """
@@ -703,7 +659,8 @@ def preprocess_graph_ncq(particle, graph_list=[], do_ket_nq=False, is_model=Fals
         # Initialize arrays for the new graph
         x_new = np.zeros(n_points)
         y_new = np.zeros(n_points)
-        x_err = np.zeros(n_points)  # Symmetric x-error (half bin width)
+        x_err_low = np.zeros(n_points)  # Symmetric x-error (half bin width)
+        x_err_high = np.zeros(n_points)  # Symmetric x-error (half bin width)
         y_err_low_new = np.zeros(n_points)
         y_err_high_new = np.zeros(n_points)
 
@@ -716,6 +673,7 @@ def preprocess_graph_ncq(particle, graph_list=[], do_ket_nq=False, is_model=Fals
             
             # Calculate bin midpoint (raw x-value)
             x_mid = (bin_low + bin_high) / 2
+            x_mid = graph.GetX()[i]
             
             # Process x based on do_ket_nq flag
             if do_ket_nq:
@@ -742,11 +700,23 @@ def preprocess_graph_ncq(particle, graph_list=[], do_ket_nq=False, is_model=Fals
             y_proc = nq_scaling(y, nq)
             y_err_low_proc = nq_scaling(y_err_low, nq)
             y_err_high_proc = nq_scaling(y_err_high, nq)
+            
+            if do_ket_nq:
+                bin_left = nq_scaling(ket_low, nq)
+                bin_right = nq_scaling(ket_high, nq)
+                x_err_low_proc = x_proc - bin_left    
+                x_err_high_proc = bin_right - x_proc  
+            else:
+                bin_left = nq_scaling(bin_low, nq)
+                bin_right = nq_scaling(bin_high, nq)
+                x_err_low_proc = x_proc - bin_left   
+                x_err_high_proc = bin_right - x_proc  
 
             # Store processed values
             x_new[i] = x_proc
             y_new[i] = y_proc
-            x_err[i] = x_err_proc  # Symmetric x-error (same for low/high)
+            x_err_low[i] = x_err_low_proc  # Symmetric x-error (same for low/high)
+            x_err_high[i] = x_err_high_proc  # Symmetric x-error (same for low/high)
             y_err_low_new[i] = y_err_low_proc
             y_err_high_new[i] = y_err_high_proc
 
@@ -754,7 +724,7 @@ def preprocess_graph_ncq(particle, graph_list=[], do_ket_nq=False, is_model=Fals
         new_graph = ROOT.TGraphAsymmErrors(
             n_points,
             x_new, y_new,
-            x_err, x_err,          # x: low and high errors (symmetric)
+            x_err_low, x_err_high,          # x: low and high errors (symmetric)
             y_err_low_new, y_err_high_new  # y: retain asymmetric errors
         )
         new_graph_list.append(new_graph)
@@ -1620,22 +1590,17 @@ def compute_ratio_graph(graph_num, graph_den):
         ratio_y.append(R)
         
         # Step 2: Error propagation for ratio (asymmetric errors)
-        # 相对误差公式：(ΔR/R)² = (ΔY_num/Y_num)² + (ΔY_den/Y_den)²
-        # 由于误差不对称（上下误差不同），需分别计算比值的上下误差
+        # (ΔR/R)² = (ΔY_num/Y_num)² + (ΔY_den/Y_den)²
         
-        # 分子的相对误差（上下分别计算）
-        rel_err_num_low = y_num_err_low[i] / y_num[i]  # 分子下相对误差
-        rel_err_num_high = y_num_err_high[i] / y_num[i]# 分子上相对误差
+        rel_err_num_low = y_num_err_low[i] / y_num[i]
+        rel_err_num_high = y_num_err_high[i] / y_num[i]
         
-        # 分母的相对误差（上下分别计算）
-        rel_err_den_low = y_den_err_low[i] / y_den[i]  # 分母下相对误差
-        rel_err_den_high = y_den_err_high[i] / y_den[i]# 分母上相对误差
+        rel_err_den_low = y_den_err_low[i] / y_den[i]  
+        rel_err_den_high = y_den_err_high[i] / y_den[i]
         
-        # 比值的相对误差（上下分别合成）
         rel_err_R_low = np.sqrt(rel_err_num_low**2 + rel_err_den_low**2)
         rel_err_R_high = np.sqrt(rel_err_num_high**2 + rel_err_den_high**2)
         
-        # 转换为绝对误差（比值的上下误差）
         R_err_low = R * rel_err_R_low
         R_err_high = R * rel_err_R_high
         
