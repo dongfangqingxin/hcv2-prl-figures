@@ -1,16 +1,84 @@
 """
 Chi-square calculation for Lc/D0/Ds v2 model comparison
 """
+from turtle import fd
 import ROOT
+from ROOT import TFile, TGraphAsymmErrors, TCanvas, TLegend
 import yaml
 import numpy as np
 import array
 from plot_untils import (
-    preprocess, merge_asymmetric_errors, model_chi2
+    preprocess, merge_asymmetric_errors, model_chi2, model_chi2_old
 )
 
 # Set ROOT batch mode to avoid GUI issues
 ROOT.gROOT.SetBatch(True)
+
+def graph_asymm_to_hist(gr_asymerr, hist_name="h_graph", hist_title="Graph to Hist", custom_bins=None):
+    """
+    Convert TGraphAsymmErrors to TH1D histogram (PyROOT)
+    Args:
+        gr_asymerr (ROOT.TGraphAsymmErrors): Input graph with asymmetric errors
+        hist_name (str): Name of output histogram
+        hist_title (str): Title of output histogram
+        custom_bins (tuple/list, optional): Custom bin config (nbins, xmin, xmax) or list of bin edges
+                                            If None: use graph's X errors to define bin edges
+    Returns:
+        ROOT.TH1D: Output histogram (Y values as bin content, X errors as bin edges, Y errors as bin errors)
+    """
+    if not gr_asymerr or gr_asymerr.GetN() == 0:
+        raise ValueError("Input TGraphAsymmErrors is empty or None!")
+    
+    n_points = gr_asymerr.GetN()
+    x_vals = gr_asymerr.GetX()
+    y_vals = gr_asymerr.GetY()
+    x_err_low = [gr_asymerr.GetErrorXlow(i) for i in range(n_points)]
+    x_err_high = [gr_asymerr.GetErrorXhigh(i) for i in range(n_points)]
+    y_err_low = [gr_asymerr.GetErrorYlow(i) for i in range(n_points)]
+    y_err_high = [gr_asymerr.GetErrorYhigh(i) for i in range(n_points)]
+
+    if custom_bins is None:
+        bin_edges = []
+        for i in range(n_points):
+            bin_low = x_vals[i] - x_err_low[i]
+            bin_high = x_vals[i] + x_err_high[i]
+            bin_edges.append(bin_low)
+        bin_edges.append(x_vals[-1] + x_err_high[-1])
+        bin_edges = sorted(list(set(bin_edges)))
+        nbins = len(bin_edges) - 1
+        
+        print(bin_edges)
+        hist = ROOT.TH1D(hist_name, hist_title, nbins, array.array('d', bin_edges))
+    
+    else:
+        if len(custom_bins) == 3:  # (nbins, xmin, xmax)
+            nbins, xmin, xmax = custom_bins
+            hist = ROOT.TH1D(hist_name, hist_title, nbins, xmin, xmax)
+        elif len(custom_bins) > 1:  
+            nbins = len(custom_bins) - 1
+            hist = ROOT.TH1D(hist_name, hist_title, nbins, array.array('d', custom_bins))
+        else:
+            raise ValueError("custom_bins must be (nbins, xmin, xmax) or list of bin edges!")
+
+    for i in range(n_points):
+        x = x_vals[i]
+        y = y_vals[i]
+        bin_idx = hist.FindBin(x)
+        if bin_idx < 1 or bin_idx > hist.GetNbinsX():
+            continue 
+        
+        hist.SetBinContent(bin_idx, y)
+        
+        y_err_avg = (y_err_low[i] + y_err_high[i]) / 2.0
+        hist.SetBinError(bin_idx, y_err_avg)
+
+    hist.SetLineColor(gr_asymerr.GetLineColor())
+    hist.SetFillColor(gr_asymerr.GetMarkerColor())
+    hist.SetMarkerStyle(gr_asymerr.GetMarkerStyle())
+    hist.GetXaxis().SetTitle(gr_asymerr.GetXaxis().GetTitle())
+    hist.GetYaxis().SetTitle(gr_asymerr.GetYaxis().GetTitle())
+
+    return hist
 
 # ---------------------- Basic Helpers ----------------------
 def load_config(config_path="plot_config.yaml"):
@@ -24,8 +92,17 @@ def load_config(config_path="plot_config.yaml"):
         raise ValueError(f"Config missing keys: {required}")
     return config
 
-def read_exp_data(file_path, particle):
+def read_exp_data(file_path, particle=None):
     """Read experimental data from ROOT file"""
+    if particle=='d0+dplus':
+        f = ROOT.TFile.Open('/home/xxf/cernbox/Lc/final-fig-paper/paper-fig/input-data/lc-d0-data/average_v2_d0_dplus.root', "READ")
+        data = {
+            'stat': TGraphAsymmErrors(f.Get("final_hist_average_stat_unc")),
+            'tot_syst': TGraphAsymmErrors(f.Get("final_hist_average_syst_unc"))
+            }
+        data['tot'] = merge_asymmetric_errors(data['stat'], data['tot_syst'])
+        f.Close()
+        return data
     f = ROOT.TFile.Open(file_path, "READ")
     if not f or f.IsZombie():
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -35,10 +112,11 @@ def read_exp_data(file_path, particle):
         'stat': f.Get("gvn_prompt_stat"),
         'reso': f.Get("reso_syst"),
         'fit': f.Get("fit_syst"),
-        'fd': f.Get("fd_syst")
+        'fd': f.Get("fd_syst"),
+        'tot_syst': f.Get("tot_syst")
     }
-    # Merge total errors (stat + reso)
-    data['total'] = merge_asymmetric_errors(data['stat'], data['reso'])
+    # # Merge tot errors (stat + reso)
+    data['tot'] = merge_asymmetric_errors(data['stat'], data['tot_syst'])
     f.Close()
     return data
 
@@ -137,17 +215,18 @@ def calculate_chi2_sys_correlation(debug=True, no_ptshift=False):
     exp_data = {
         'd0': read_exp_data(DATA_PATHS['d0'], 'd0'),
         'ds': read_exp_data(DATA_PATHS['ds'], 'ds'),
-        'lc': read_exp_data(DATA_PATHS['lc'], 'lc')
+        'lc': read_exp_data(DATA_PATHS['lc'], 'lc'),
+        'd0+dplus': read_exp_data('', 'd0+dplus'),
     }
 
     # 3. Interpolation function for models
     def interpolate_model(model_key, particle):
         """Interpolate single model to particle's experimental points"""
-        data_target = exp_data[particle]['total']
+        data_target = exp_data[particle]['tot']
         
         # TAMU models (special handling for d0/lc vs ds)
         if 'tamu' in model_key:
-            if particle in ['d0', 'lc']:
+            if particle in ['d0', 'lc', 'd0+dplus']:
                 # d0/lc have low/high files
                 x_low, y_low = preprocess(model_files[model_key]['low'], sep=',', do_interp=True)
                 x_high, y_high = preprocess(model_files[model_key]['high'], sep=',', do_interp=True)
@@ -190,6 +269,15 @@ def calculate_chi2_sys_correlation(debug=True, no_ptshift=False):
             interpolate_model('lbt_d0', 'd0'),
             interpolate_model('epos4hq_d0', 'd0')
         ],
+        'd0+dplus': [
+            interpolate_model('tamu_d0', 'd0+dplus'),
+            interpolate_model('catania_d0', 'd0+dplus'),
+            interpolate_model('langevin_d0', 'd0+dplus'),
+            interpolate_model('HTL_D0', 'd0+dplus'),
+            interpolate_model('latQCD_D0', 'd0+dplus'),
+            interpolate_model('lbt_d0', 'd0+dplus'),
+            interpolate_model('epos4hq_d0', 'd0+dplus')
+        ],
         'ds': [
             interpolate_model('tamu_ds', 'ds'),
             interpolate_model('HTL_Ds', 'ds'),
@@ -209,6 +297,27 @@ def calculate_chi2_sys_correlation(debug=True, no_ptshift=False):
     # 5. Chi2 calculation for correlation scenarios
     def test_sys_correlation(data_graph, model_graph, stat_graph, sys_graphs, ndf):
         """Calculate chi2 for different sys error correlation scenarios"""
+        if not sys_graphs:
+            test_output = TFile.Open(f"test_chi2_{model_graph.GetName()}.root", "RECREATE")
+            data_graph.Write("data_graph")
+            model_graph.Write("model_graph")
+            c = TCanvas("c1", "c1", 800, 600)
+            data_graph.Draw("AP")
+            model_graph.Draw("P SAME")
+            c.Write()
+            test_output.Close()
+            results = {}
+            _, _, chi2_ndf, _ = model_chi2(
+                data_asymm=data_graph, h_model=model_graph, stat_err_data=stat_graph,
+                sys_corr_components=None, sys_uncorr_components=None,
+                rho_sys_uncorr=np.eye(2), ndf=ndf
+            )
+            results['Baseline'] = chi2_ndf
+            _, _, chi2_ndf = model_chi2_old(
+                data_asymm=data_graph, h_model=graph_asymm_to_hist(model_graph), ndf=ndf
+            )
+            results['Baseline_Old'] = chi2_ndf
+            return {model_graph.GetName(): results}
         reso, fit, fd = sys_graphs
         results = {}
 
@@ -252,27 +361,33 @@ def calculate_chi2_sys_correlation(debug=True, no_ptshift=False):
         return {model_graph.GetName(): results}
 
     # 6. Calculate chi2 for all particles/models
-    chi2_results = {'D0': {}, 'Ds': {}, 'LambdaC': {}}
-    ndf_map = {'d0':12, 'ds':8, 'lc':5}
+    chi2_results = {'D0': {}, 'd0+dplus': {}, 'Ds': {}, 'LambdaC': {}}
+    ndf_map = {'d0':12, 'd0+dplus':12, 'ds':8, 'lc':5}
 
     # D0
     for graph in model_graphs['d0']:
         chi2_results['D0'].update(test_sys_correlation(
-            exp_data['d0']['total'], graph, exp_data['d0']['stat'],
+            exp_data['d0']['tot'], graph, exp_data['d0']['stat'],
             [exp_data['d0']['reso'], exp_data['d0']['fit'], exp_data['d0']['fd']], ndf_map['d0']
+        ))
+    
+    for graph in model_graphs['d0+dplus']:
+        chi2_results['d0+dplus'].update(test_sys_correlation(
+            exp_data['d0+dplus']['tot'], graph, None,
+            None, ndf_map['d0+dplus']
         ))
 
     # Ds
     for graph in model_graphs['ds']:
         chi2_results['Ds'].update(test_sys_correlation(
-            exp_data['ds']['total'], graph, exp_data['ds']['stat'],
+            exp_data['ds']['tot'], graph, exp_data['ds']['stat'],
             [exp_data['ds']['reso'], exp_data['ds']['fit'], exp_data['ds']['fd']], ndf_map['ds']
         ))
 
     # LambdaC
     for graph in model_graphs['lc']:
         chi2_results['LambdaC'].update(test_sys_correlation(
-            exp_data['lc']['total'], graph, exp_data['lc']['stat'],
+            exp_data['lc']['tot'], graph, exp_data['lc']['stat'],
             [exp_data['lc']['reso'], exp_data['lc']['fit'], exp_data['lc']['fd']], ndf_map['lc']
         ))
 
@@ -292,7 +407,6 @@ def calculate_chi2_sys_correlation(debug=True, no_ptshift=False):
 
     return chi2_results
 
-import numpy as np
 
 def save_chi2_results_to_txt(results, no_ptshift, output_path="chi2_results.txt"):
     """
@@ -330,6 +444,6 @@ def save_chi2_results_to_txt(results, no_ptshift, output_path="chi2_results.txt"
 # ---------------------- Run ----------------------
 if __name__ == "__main__":
     # no_ptshift: Use bin centers for interpolation (True) vs. shifted points (False)
-    no_ptshift = False
+    no_ptshift = True
     results = calculate_chi2_sys_correlation(debug=False, no_ptshift=no_ptshift)
     save_chi2_results_to_txt(results, no_ptshift=no_ptshift, output_path="chi2_results.txt")
